@@ -193,33 +193,52 @@ app.get("/verify/:credID", async (req, res) => {
   }
 });
 
-// ----- REVOKE (Org1 writes in Org1 PDC) -----
+// ----- REVOKE (two-step: Org1 revoke -> Org1 read -> Org2 upsert) -----
 app.post("/revoke", async (req, res) => {
-  let gateway;
+  let g1, g2;
   try {
     const { credID } = req.body;
+    if (!credID) return res.status(400).json({ error: "credID is required" });
 
-    const r = await getContract({
-      msp: "Org1MSP",
-      userDir: "Admin@org1.example.com",
-    });
-    gateway = r.gateway;
-    const contract = r.contract;
+    // 1) Revoke in Org1 (updates Org1 PDC)
+    {
+      const r1 = await getContract({ msp: "Org1MSP", userDir: "Admin@org1.example.com" });
+      g1 = r1.gateway;
+      const c1 = r1.contract;
 
-    const proposal = contract.newProposal("RevokeCredential", {
-      arguments: [credID],
-    });
+      const pRevoke = c1.newProposal("RevokeCredential", { arguments: [credID] });
+      const endorsed = await pRevoke.endorse({ endorsingOrganizations: ["Org1MSP"] });
+      const commit = await endorsed.submit();
+      await commit.getStatus();
 
-    const endorsed = await proposal.endorse({ endorsingOrganizations: ["Org1MSP"] });
-    const commit = await endorsed.submit();
-    await commit.getStatus();
+      // Read back the updated record from Org1
+      const pRead = c1.newProposal("ReadCredential", { arguments: [credID] });
+      const buf = await pRead.evaluate({ endorsingOrganizations: ["Org1MSP"] });
+      var updated = JSON.parse(Buffer.from(buf).toString("utf8"));
 
-    res.json({ ok: true, credID });
+      g1.close(); g1 = undefined;
+    }
+
+    // 2) Upsert into Org2 (so Verify reflects the revoked status)
+    {
+      const r2 = await getContract({ msp: "Org2MSP", userDir: "Admin@org2.example.com" });
+      g2 = r2.gateway;
+      const c2 = r2.contract;
+
+      const pWrite = c2.newProposal("StoreCredentialForOrg2", { arguments: [JSON.stringify(updated)] });
+      const endorsed2 = await pWrite.endorse({ endorsingOrganizations: ["Org2MSP"] });
+      const commit2 = await endorsed2.submit();
+      await commit2.getStatus();
+
+      g2.close(); g2 = undefined;
+    }
+
+    res.json({ ok: true, credID, status: "revoked", syncedTo: "Org2MSP" });
   } catch (e) {
+    try { g1?.close(); } catch {}
+    try { g2?.close(); } catch {}
     console.error("Revoke error:", e);
-    res.status(500).json({ error: errPayload(e) });
-  } finally {
-    try { gateway?.close(); } catch { /* ignore */ }
+    res.status(500).json({ error: e?.details || e?.message || String(e) });
   }
 });
 
