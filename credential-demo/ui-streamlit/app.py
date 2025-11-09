@@ -70,6 +70,10 @@ tab_issue, tab_share, tab_verify, tab_revoke = st.tabs(["📄 Issue", "🔗 Shar
 with tab_issue:
     st.subheader("Issue Credential (University / Org1)")
 
+    import hashlib
+    def canonical_string(cid, sid, sname, uni, deg, gpa, idate):
+        return f"{cid}|{sid}|{sname}|{uni}|{deg}|{gpa}|{idate}"
+
     with st.form("issue_form"):
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
@@ -82,7 +86,14 @@ with tab_issue:
             issueDate = st.text_input("Issue Date (YYYY-MM-DD)", value="2025-10-01")
         with c3:
             university = st.text_input("University", value="UniA")
-            hashv = st.text_input("Optional Hash", value="hash123")
+            # removed: optional hash input
+
+        # Live preview of the auto-computed hash (matches chaincode)
+        cano = canonical_string(credID.strip(), studentID.strip(), studentName.strip(),
+                                university.strip(), degree.strip(), gpa.strip(), issueDate.strip())
+        preview_hash = hashlib.sha256(cano.encode("utf-8")).hexdigest()
+        st.caption("Auto-computed SHA-256 (preview; stored on-chain by chaincode):")
+        st.code(preview_hash)
 
         submitted = st.form_submit_button("🚀 Issue")
         if submitted:
@@ -98,15 +109,17 @@ with tab_issue:
                         "degree": degree.strip(),
                         "gpa": gpa.strip(),
                         "issueDate": issueDate.strip(),
-                        "hash": hashv.strip(),
+                        # do NOT send 'hash' – chaincode computes it
                     }
                     ok, data, sec = call_api("POST", "/issue", json_payload=payload)
                 if ok:
                     st.success(f"✅ Issued {credID}  •  {sec:.2f}s")
+                    st.info("The on-chain hash equals the preview above.")
                     st.code(json.dumps(data, indent=2), language="json")
                 else:
                     st.error("Failed to issue.")
                     st.code(json.dumps(data, indent=2) if isinstance(data, dict) else str(data))
+
 
 # ----------------------------- Share ---------------------------------------
 
