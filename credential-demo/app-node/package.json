@@ -1,0 +1,12 @@
+{
+  "name": "cred-app",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.11.5",
+    "@hyperledger/fabric-gateway": "^1.8.0",
+    "express": "^4.19.2"
+  },
+  "scripts": { "start": "node index.js" }
+}

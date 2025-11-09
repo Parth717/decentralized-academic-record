@@ -5,156 +5,181 @@ import (
 	"fmt"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
-	"github.com/hyperledger/fabric-chaincode-go/v2/pkg/cid"
 )
 
-const collection = "credPDC"
+// ---------- Data Model ----------
 
-// Public index (world state)
-type CredentialPublic struct {
-	CredentialID string   `json:"credentialID"`
-	StudentID    string   `json:"studentID"`   // opaque (e.g., roll no. or hash)
-	University   string   `json:"university"`
-	Status       string   `json:"status"`      // Issued | Shared | Revoked
-	Hash         string   `json:"hash"`        // hash of private payload
-	IssueDate    string   `json:"issueDate"`
-	SharedWith   []string `json:"sharedWith"`  // MSP IDs allowed (logical)
+type Credential struct {
+	CredID        string `json:"credID"`
+	StudentID     string `json:"studentID"`
+	StudentName   string `json:"studentName"`
+	University    string `json:"university"`
+	Degree        string `json:"degree"`
+	GPA           string `json:"gpa"`
+	IssueDate     string `json:"issueDate"`
+	Hash          string `json:"hash"`
+	Status        string `json:"status"` // issued / revoked
+	OwnerMSP      string `json:"ownerMSP"`
+	SharedWithMSP string `json:"sharedWithMSP"` // always present, may be ""
 }
 
-// Private payload (lives in PDC)
-type CredentialPrivate struct {
-	CredentialID string `json:"credentialID"`
-	StudentName  string `json:"studentName"`
-	University   string `json:"university"`
-	Degree       string `json:"degree"`
-	GPA          string `json:"gpa"`
-	IssueDate    string `json:"issueDate"`
+// ---------- Smart Contract ----------
+
+type SmartContract struct {
+	contractapi.Contract
 }
 
-type Contract struct{ contractapi.Contract }
+// ---------- Issue ----------
 
-func (c *Contract) IssueCredential(ctx contractapi.TransactionContextInterface,
+func (s *SmartContract) IssueCredential(ctx contractapi.TransactionContextInterface,
 	credID, studentID, studentName, university, degree, gpa, issueDate, hash string) error {
 
-	msp, err := cid.GetMSPID(ctx.GetStub())
+	exists, err := s.CredentialExists(ctx, credID)
 	if err != nil {
 		return err
 	}
-	if msp != "Org1MSP" { // University only
-		return fmt.Errorf("only University (Org1MSP) can issue")
+	if exists {
+		return fmt.Errorf("credential %s already exists", credID)
 	}
 
-	exists, err := ctx.GetStub().GetState("cred:" + credID)
+	mspid, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("cannot get MSP ID: %v", err)
+	}
+
+	cred := Credential{
+		CredID:        credID,
+		StudentID:     studentID,
+		StudentName:   studentName,
+		University:    university,
+		Degree:        degree,
+		GPA:           gpa,
+		IssueDate:     issueDate,
+		Hash:          hash,
+		Status:        "issued",
+		OwnerMSP:      mspid,
+		SharedWithMSP: "", // always present
+	}
+
+	data, _ := json.Marshal(cred)
+	return ctx.GetStub().PutPrivateData("Org1PrivateCollection", credID, data)
+}
+
+// ---------- Read (Org1 only) ----------
+
+func (s *SmartContract) ReadCredential(ctx contractapi.TransactionContextInterface, credID string) (*Credential, error) {
+	data, err := ctx.GetStub().GetPrivateData("Org1PrivateCollection", credID)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("credential %s not found", credID)
+	}
+
+	var cred Credential
+	if err := json.Unmarshal(data, &cred); err != nil {
+		return nil, err
+	}
+	if cred.SharedWithMSP == "" {
+		cred.SharedWithMSP = ""
+	}
+	return &cred, nil
+}
+
+// ---------- Write for Org2 (called by Org2) ----------
+
+func (s *SmartContract) StoreCredentialForOrg2(ctx contractapi.TransactionContextInterface, credJSON string) error {
+	mspid, _ := ctx.GetClientIdentity().GetMSPID()
+	if mspid != "Org2MSP" {
+		return fmt.Errorf("only Org2 can write into Org2PrivateCollection")
+	}
+
+	var cred Credential
+	if err := json.Unmarshal([]byte(credJSON), &cred); err != nil {
+		return fmt.Errorf("invalid credential json: %v", err)
+	}
+	if cred.CredID == "" {
+		return fmt.Errorf("credID required in credential json")
+	}
+
+	cred.SharedWithMSP = "Org2MSP"
+	data, _ := json.Marshal(cred)
+	return ctx.GetStub().PutPrivateData("Org2PrivateCollection", cred.CredID, data)
+}
+
+// ---------- Verify (Org2 read) ----------
+
+func (s *SmartContract) VerifyCredential(ctx contractapi.TransactionContextInterface, credID string) (*Credential, error) {
+	mspid, _ := ctx.GetClientIdentity().GetMSPID()
+	if mspid != "Org2MSP" {
+		return nil, fmt.Errorf("only Org2 can verify credentials")
+	}
+
+	data, err := ctx.GetStub().GetPrivateData("Org2PrivateCollection", credID)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("credential %s not found in Org2 collection", credID)
+	}
+
+	var cred Credential
+	if err := json.Unmarshal(data, &cred); err != nil {
+		return nil, err
+	}
+	if cred.SharedWithMSP == "" {
+		cred.SharedWithMSP = "Org2MSP"
+	}
+	return &cred, nil
+}
+
+// ---------- Revoke (Org1 only) ----------
+
+func (s *SmartContract) RevokeCredential(ctx contractapi.TransactionContextInterface, credID string) error {
+	mspid, _ := ctx.GetClientIdentity().GetMSPID()
+	if mspid != "Org1MSP" {
+		return fmt.Errorf("only Org1 can revoke credentials")
+	}
+
+	data, err := ctx.GetStub().GetPrivateData("Org1PrivateCollection", credID)
 	if err != nil {
 		return err
 	}
-	if exists != nil {
-		return fmt.Errorf("credential already exists")
+	if data == nil {
+		return fmt.Errorf("credential %s not found", credID)
 	}
 
-	pub := &CredentialPublic{
-		CredentialID: credID, StudentID: studentID, University: university,
-		Status: "Issued", Hash: hash, IssueDate: issueDate, SharedWith: []string{},
-	}
-	pubB, _ := json.Marshal(pub)
-	if err := ctx.GetStub().PutState("cred:"+credID, pubB); err != nil {
+	var cred Credential
+	if err := json.Unmarshal(data, &cred); err != nil {
 		return err
 	}
-
-	priv := &CredentialPrivate{
-		CredentialID: credID, StudentName: studentName, University: university,
-		Degree: degree, GPA: gpa, IssueDate: issueDate,
+	cred.Status = "revoked"
+	if cred.SharedWithMSP == "" {
+		cred.SharedWithMSP = ""
 	}
-	privB, _ := json.Marshal(priv)
-	return ctx.GetStub().PutPrivateData(collection, "credpriv:"+credID, privB)
+
+	newData, _ := json.Marshal(cred)
+	return ctx.GetStub().PutPrivateData("Org1PrivateCollection", credID, newData)
 }
 
-func (c *Contract) ShareCredential(ctx contractapi.TransactionContextInterface, credID, targetMSP string) error {
-	role, found, _ := cid.GetAttributeValue(ctx.GetStub(), "role")
-	if !found || role != "student" {
-		return fmt.Errorf("only Student (role=student) can share")
-	}
+// ---------- Exists Helper ----------
 
-	pubB, err := ctx.GetStub().GetState("cred:" + credID)
-	if err != nil || pubB == nil {
-		return fmt.Errorf("credential not found")
+func (s *SmartContract) CredentialExists(ctx contractapi.TransactionContextInterface, credID string) (bool, error) {
+	data, err := ctx.GetStub().GetPrivateData("Org1PrivateCollection", credID)
+	if err != nil {
+		return false, err
 	}
-	var pub CredentialPublic
-	_ = json.Unmarshal(pubB, &pub)
-	if pub.Status == "Revoked" {
-		return fmt.Errorf("credential revoked")
-	}
-	already := false
-	for _, m := range pub.SharedWith {
-		if m == targetMSP {
-			already = true
-			break
-		}
-	}
-	if !already {
-		pub.SharedWith = append(pub.SharedWith, targetMSP)
-		pub.Status = "Shared"
-	}
-	newB, _ := json.Marshal(pub)
-	return ctx.GetStub().PutState("cred:"+credID, newB)
+	return data != nil, nil
 }
 
-func (c *Contract) RevokeCredential(ctx contractapi.TransactionContextInterface, credID string) error {
-	msp, _ := cid.GetMSPID(ctx.GetStub())
-	if msp != "Org1MSP" {
-		return fmt.Errorf("only University may revoke")
-	}
-	pubB, _ := ctx.GetStub().GetState("cred:" + credID)
-	if pubB == nil {
-		return fmt.Errorf("not found")
-	}
-	var pub CredentialPublic
-	_ = json.Unmarshal(pubB, &pub)
-	pub.Status = "Revoked"
-	newB, _ := json.Marshal(pub)
-	return ctx.GetStub().PutState("cred:"+credID, newB)
-}
-
-// For verifiers (Org2)
-func (c *Contract) VerifyCredential(ctx contractapi.TransactionContextInterface, credID string) (*CredentialPrivate, error) {
-	msp, _ := cid.GetMSPID(ctx.GetStub())
-
-	pubB, _ := ctx.GetStub().GetState("cred:" + credID)
-	if pubB == nil {
-		return nil, fmt.Errorf("not found")
-	}
-	var pub CredentialPublic
-	_ = json.Unmarshal(pubB, &pub)
-
-	if pub.Status != "Shared" {
-		return nil, fmt.Errorf("not shared")
-	}
-	authorized := false
-	for _, m := range pub.SharedWith {
-		if m == msp {
-			authorized = true
-			break
-		}
-	}
-	if !authorized {
-		return nil, fmt.Errorf("not authorized for this credential")
-	}
-
-	privB, err := ctx.GetStub().GetPrivateData(collection, "credpriv:"+credID)
-	if err != nil || privB == nil {
-		return nil, fmt.Errorf("no private data accessible")
-	}
-	var priv CredentialPrivate
-	_ = json.Unmarshal(privB, &priv)
-	return &priv, nil
-}
+// ---------- Main ----------
 
 func main() {
-	cc, err := contractapi.NewChaincode(new(Contract))
+	cc, err := contractapi.NewChaincode(new(SmartContract))
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("error creating chaincode: %v", err))
 	}
 	if err := cc.Start(); err != nil {
-		panic(err)
+		panic(fmt.Sprintf("error starting chaincode: %v", err))
 	}
 }
