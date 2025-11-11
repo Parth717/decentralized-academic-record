@@ -4,16 +4,14 @@ go 1.21.0
 
 toolchain go1.22.5
 
-require (
-	github.com/hyperledger/fabric-chaincode-go/v2 v2.0.0
-	github.com/hyperledger/fabric-contract-api-go/v2 v2.2.0
-)
+require github.com/hyperledger/fabric-contract-api-go/v2 v2.2.0
 
 require (
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.21.0 // indirect
 	github.com/go-openapi/spec v0.21.0 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
+	github.com/hyperledger/fabric-chaincode-go/v2 v2.0.0 // indirect
 	github.com/hyperledger/fabric-protos-go-apiv2 v0.3.4 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
